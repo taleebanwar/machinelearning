@@ -49,7 +49,7 @@ namespace Microsoft.ML.Runtime.PCA
         internal const string Summary = "This algorithm trains an approximate PCA using Randomized SVD algorithm. "
             + "This PCA can be made into Kernel PCA by using Random Fourier Features transform.";
 
-        public class Arguments : LearnerInputBaseWithWeight
+        public class Arguments : UnsupervisedLearnerInputBaseWithWeight
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "The number of components in the PCA", ShortName = "k", SortOrder = 50)]
             [TGUI(SuggestedSweeps = "10,20,40,80")]
@@ -62,7 +62,7 @@ namespace Microsoft.ML.Runtime.PCA
             public int Oversampling = 20;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "If enabled, data is centered to be zero mean", ShortName = "center")]
-            [TlcModule.SweepableDiscreteParam("Center", null, isBool:true)]
+            [TlcModule.SweepableDiscreteParam("Center", null, isBool: true)]
             public bool Center = true;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "The seed for random number generation", ShortName = "seed")]
@@ -284,7 +284,11 @@ namespace Microsoft.ML.Runtime.PCA
             }
         }
 
-        [TlcModule.EntryPoint(Name = "Trainers.PcaAnomalyDetector", Desc = "Train an PCA Anomaly model.", UserName = UserNameValue, ShortName = ShortName)]
+        [TlcModule.EntryPoint(Name = "Trainers.PcaAnomalyDetector",
+            Desc = "Train an PCA Anomaly model.",
+            Remarks = PcaPredictor.Remarks,
+            UserName = UserNameValue,
+            ShortName = ShortName)]
         public static CommonOutputs.AnomalyDetectionOutput TrainPcaAnomaly(IHostEnvironment env, Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -294,8 +298,7 @@ namespace Microsoft.ML.Runtime.PCA
 
             return LearnerEntryPointsUtils.Train<Arguments, CommonOutputs.AnomalyDetectionOutput>(host, input,
                 () => new RandomizedPcaTrainer(host, input),
-                () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.LabelColumn),
-                () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.WeightColumn));
+                getWeight: () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.WeightColumn));
         }
     }
 
@@ -308,10 +311,19 @@ namespace Microsoft.ML.Runtime.PCA
     // REVIEW: move the predictor to a different file and fold EigenUtils.cs to this file.
     public sealed class PcaPredictor : PredictorBase<Float>,
         IValueMapper,
+        ICanGetSummaryAsIDataView,
         ICanSaveInTextFormat, ICanSaveModel, ICanSaveSummary
     {
         public const string LoaderSignature = "pcaAnomExec";
         public const string RegistrationName = "PCAPredictor";
+        internal const string Remarks = @"<remarks>
+<a href='https://en.wikipedia.org/wiki/Principal_component_analysis'>Principle Component Analysis (PCA)</a> is a dimensionality-reduction transform which computes the projection of the feature vector to onto a low-rank subspace.
+Its training is done using the technique described in the paper: <a href='https://arxiv.org/pdf/1310.6304v2.pdf'>Combining Structured and Unstructured Randomness in Large Scale PCA</a>, 
+and the paper <see href='https://arxiv.org/pdf/0909.4061v2.pdf'>Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions</see>
+<a href='http://web.stanford.edu/group/mmds/slides2010/Martinsson.pdf'>Randomized Methods for Computing the Singular Value Decomposition (SVD) of very large matrices</a>
+<a href='https://arxiv.org/abs/0809.2274'>A randomized algorithm for principal component analysis</a>
+<a href='http://users.cms.caltech.edu/~jtropp/papers/HMT11-Finding-Structure-SIREV.pdf'>Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions</a>
+</remarks>";
 
         private static VersionInfo GetVersionInfo()
         {
@@ -467,6 +479,26 @@ namespace Microsoft.ML.Runtime.PCA
                     (ind, val) => { if (val != 0) writer.Write(" {0}:{1}", ind, val); });
                 writer.WriteLine();
             }
+        }
+
+        public IDataView GetSummaryDataView(RoleMappedSchema schema)
+        {
+            var bldr = new ArrayDataViewBuilder(Host);
+
+            var cols = new VBuffer<Float>[_rank + 1];
+            var names = new string[_rank + 1];
+            for (var i = 0; i < _rank; ++i)
+            {
+                names[i] = "EigenVector" + i;
+                cols[i] = _eigenVectors[i];
+            }
+            names[_rank] = "MeanVector";
+            cols[_rank] = _mean;
+
+            bldr.AddColumn("VectorName", names);
+            bldr.AddColumn("VectorData", NumberType.R4, cols);
+
+            return bldr.GetDataView();
         }
 
         public ColumnType InputType

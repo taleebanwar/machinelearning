@@ -36,6 +36,14 @@ namespace Microsoft.ML.Runtime.KMeans
         internal const string Summary = "K-means is a popular clustering algorithm. With K-means, the data is clustered into a specified "
             + "number of clusters in order to minimize the within-cluster sum of squares. K-means++ improves upon K-means by using a better "
             + "method for choosing the initial cluster centers.";
+        internal const string Remarks = @"<remarks>
+K-means++ improves upon K-means by using the <a href='http://research.microsoft.com/apps/pubs/default.aspx?id=252149'>Yinyang K-Means</a> method for choosing the initial cluster centers.
+YYK-Means accelerates K-Means up to an order of magnitude while producing exactly the same clustering results (modulo floating point precision issues).   
+YYK-Means observes that there is a lot of redundancy across iterations in the KMeans algorithms and most points do not change their clusters during an iteration. 
+It uses various bounding techniques to identify this redundancy and eliminate many distance computations and optimize centroid computations. 
+<a href='https://en.wikipedia.org/wiki/K-means_clustering'>K-means</a>.
+<a href='https://en.wikipedia.org/wiki/K-means%2b%2b'>K-means++</a>
+</remarks>";
 
         public enum InitAlgorithm
         {
@@ -44,7 +52,7 @@ namespace Microsoft.ML.Runtime.KMeans
             KMeansParallel = 2
         }
 
-        public class Arguments : LearnerInputBase
+        public class Arguments : UnsupervisedLearnerInputBaseWithWeight
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "The number of clusters", SortOrder = 50)]
             [TGUI(SuggestedSweeps = "5,10,20,40")]
@@ -162,7 +170,7 @@ namespace Microsoft.ML.Runtime.KMeans
             long missingFeatureCount;
             long totalTrainingInstances;
 
-            var cursorFactory = new FeatureFloatVectorCursor.Factory(data, CursOpt.Features | CursOpt.Id);
+            var cursorFactory = new FeatureFloatVectorCursor.Factory(data, CursOpt.Features | CursOpt.Id | CursOpt.Weight);
             // REVIEW: It would be nice to extract these out into subcomponents in the future. We should
             // revisit and even consider breaking these all into individual KMeans-flavored trainers, they
             // all produce a valid set of output centroids with various trade-offs in runtime (with perhaps 
@@ -225,7 +233,11 @@ namespace Microsoft.ML.Runtime.KMeans
             return Math.Max(1, maxThreads);
         }
 
-        [TlcModule.EntryPoint(Name = "Trainers.KMeansPlusPlusClusterer", Desc = KMeansPlusPlusTrainer.Summary, UserName = UserNameValue, ShortName = ShortName)]
+        [TlcModule.EntryPoint(Name = "Trainers.KMeansPlusPlusClusterer",
+            Desc = Summary,
+            Remarks = Remarks,
+            UserName = UserNameValue,
+            ShortName = ShortName)]
         public static CommonOutputs.ClusteringOutput TrainKMeans(IHostEnvironment env, Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -234,7 +246,8 @@ namespace Microsoft.ML.Runtime.KMeans
             EntryPointUtils.CheckInputArgs(host, input);
 
             return LearnerEntryPointsUtils.Train<Arguments, CommonOutputs.ClusteringOutput>(host, input,
-                () => new KMeansPlusPlusTrainer(host, input));
+                () => new KMeansPlusPlusTrainer(host, input),
+                getWeight: () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.WeightColumn));
         }
     }
 

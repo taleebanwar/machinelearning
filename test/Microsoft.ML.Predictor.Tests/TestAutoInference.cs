@@ -2,12 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Linq;
-using Newtonsoft.Json.Linq;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.EntryPoints.JsonUtils;
 using Microsoft.ML.Runtime.PipelineInference;
+using Newtonsoft.Json.Linq;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.InteropServices;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -26,8 +28,8 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             using (var env = new TlcEnvironment())
             {
-                string pathData = GetDataPath(@"../../Samples/UCI/adult.train");
-                string pathDataTest = GetDataPath(@"../../Samples/UCI/adult.test");
+                string pathData = GetDataPath("adult.train");
+                string pathDataTest = GetDataPath("adult.test");
                 int numOfSampleRows = 1000;
                 int batchSize = 5;
                 int numIterations = 10;
@@ -72,8 +74,8 @@ namespace Microsoft.ML.Runtime.RunTests
         public void TestPipelineSweeperMacroNoTransforms()
         {
             // Set up inputs for experiment
-            string pathData = GetDataPath(@"../../Samples/UCI/adult.train");
-            string pathDataTest = GetDataPath(@"../../Samples/UCI/adult.test");
+            string pathData = GetDataPath("adult.train");
+            string pathDataTest = GetDataPath("adult.test");
             const int numOfSampleRows = 1000;
             const string schema = "sep=, col=Features:R4:0,2,4,10-12 col=Label:R4:14 header=+";
 
@@ -128,8 +130,8 @@ namespace Microsoft.ML.Runtime.RunTests
         public void EntryPointPipelineSweepSerialization()
         {
             // Get datasets
-            var pathData = GetDataPath(@"../../Samples/UCI/adult.train");
-            var pathDataTest = GetDataPath(@"../../Samples/UCI/adult.test");
+            var pathData = GetDataPath("adult.train");
+            var pathDataTest = GetDataPath("adult.test");
             const int numOfSampleRows = 1000;
             int numIterations = 10;
             const string schema =
@@ -200,8 +202,8 @@ namespace Microsoft.ML.Runtime.RunTests
         public void EntryPointPipelineSweep()
         {
             // Get datasets
-            var pathData = GetDataPath(@"adult.tiny.with-schema.txt");
-            var pathDataTest = GetDataPath(@"adult.tiny.with-schema.txt");
+            var pathData = GetDataPath("adult.tiny.with-schema.txt");
+            var pathDataTest = GetDataPath("adult.tiny.with-schema.txt");
             const int numOfSampleRows = 1000;
             int numIterations = 4;
             var inputFileTrain = new SimpleFileHandle(Env, pathData, false, false);
@@ -274,8 +276,8 @@ namespace Microsoft.ML.Runtime.RunTests
         public void TestRocketPipelineEngine()
         {
             // Get datasets
-            var pathData = GetDataPath(@"../../Samples/UCI", "adult.train");
-            var pathDataTest = GetDataPath(@"../../Samples/UCI", "adult.test");
+            var pathData = GetDataPath("adult.train");
+            var pathDataTest = GetDataPath("adult.test");
             const int numOfSampleRows = 1000;
             int numIterations = 35;
             const string schema =
@@ -412,9 +414,30 @@ namespace Microsoft.ML.Runtime.RunTests
         }
 
         [Fact]
+        public void TestSupportedMetricsByName()
+        {
+            var names = new List<string>()
+            {
+                AutoInference.SupportedMetric.AccuracyMacro.Name,
+                AutoInference.SupportedMetric.AccuracyMicro.Name,
+                AutoInference.SupportedMetric.Auc.Name,
+                AutoInference.SupportedMetric.AuPrc.Name,
+                AutoInference.SupportedMetric.Dbi.Name,
+                AutoInference.SupportedMetric.F1.Name,
+                AutoInference.SupportedMetric.LogLossReduction.Name
+            };
+
+            foreach (var name in names)
+            {
+                var metric = AutoInference.SupportedMetric.ByName(name);
+                Assert.Equal(metric.Name, name);
+            }
+        }
+
+        [Fact]
         public void TestHyperparameterFreezing()
         {
-            string pathData = GetDataPath(@"../../Samples/UCI", "adult.train");
+            string pathData = GetDataPath("adult.train");
             int numOfSampleRows = 1000;
             int batchSize = 1;
             int numIterations = 10;
@@ -489,7 +512,7 @@ namespace Microsoft.ML.Runtime.RunTests
         [Fact]
         public void TestLearnerConstrainingByName()
         {
-            string pathData = GetDataPath(@"../../Samples/UCI", "adult.train");
+            string pathData = GetDataPath("adult.train");
             int numOfSampleRows = 1000;
             int batchSize = 1;
             int numIterations = 1;
@@ -518,8 +541,8 @@ namespace Microsoft.ML.Runtime.RunTests
         public void TestRequestedLearners()
         {
             // Get datasets
-            var pathData = GetDataPath(@"../../Samples/UCI", "adult.train");
-            var pathDataTest = GetDataPath(@"../../Samples/UCI", "adult.test");
+            var pathData = GetDataPath("adult.train");
+            var pathDataTest = GetDataPath("adult.test");
             const int numOfSampleRows = 100;
             const string schema =
                 "sep=, col=Features:R4:0,2,4,10-12 col=workclass:TX:1 col=education:TX:3 col=marital_status:TX:5 col=occupation:TX:6 " +
