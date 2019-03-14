@@ -7,15 +7,16 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints.JsonUtils;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace Microsoft.ML.Runtime.EntryPoints
+namespace Microsoft.ML.EntryPoints
 {
-    public class VarSerializer : JsonConverter
+    internal class VarSerializer : JsonConverter
     {
         public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
         {
@@ -52,7 +53,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// in an entry point graph.
     /// </summary>
     [JsonConverter(typeof(VarSerializer))]
-    public sealed class Var<T> : IVarSerializationHelper
+    [BestFriend]
+    internal sealed class Var<T> : IVarSerializationHelper
     {
         public string VarName { get; set; }
         bool IVarSerializationHelper.IsValue { get; }
@@ -77,11 +79,10 @@ namespace Microsoft.ML.Runtime.EntryPoints
             return
                 type == typeof(IDataView) ||
                 type == typeof(IFileHandle) ||
-                type == typeof(IPredictorModel) ||
-                type == typeof(ITransformModel) ||
+                type == typeof(PredictorModel) ||
+                type == typeof(TransformModel) ||
                 type == typeof(CommonInputs.IEvaluatorInput) ||
-                type == typeof(CommonOutputs.IEvaluatorOutput) ||
-                type == typeof(IMlState);
+                type == typeof(CommonOutputs.IEvaluatorOutput);
         }
     }
 
@@ -90,7 +91,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// in an entry point graph.
     /// </summary>
     [JsonConverter(typeof(VarSerializer))]
-    public sealed class ArrayVar<T> : IVarSerializationHelper
+    [BestFriend]
+    internal sealed class ArrayVar<T> : IVarSerializationHelper
     {
         public string VarName { get; set; }
         private readonly bool _isValue;
@@ -127,7 +129,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// in an entry point graph.
     /// </summary>
     [JsonConverter(typeof(VarSerializer))]
-    public sealed class DictionaryVar<T> : IVarSerializationHelper
+    internal sealed class DictionaryVar<T> : IVarSerializationHelper
     {
         public string VarName { get; set; }
         bool IVarSerializationHelper.IsValue { get; }
@@ -153,7 +155,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// <summary>
     /// A descriptor of one 'variable' of the graph (input or output that is referenced as a $variable in the graph definition).
     /// </summary>
-    public sealed class EntryPointVariable
+    [BestFriend]
+    internal sealed class EntryPointVariable
     {
         private readonly IExceptionContext _ectx;
         public readonly string Name;
@@ -185,8 +188,6 @@ namespace Microsoft.ML.Runtime.EntryPoints
             if (variableType == typeof(CommonInputs.IEvaluatorInput))
                 return true;
             if (variableType == typeof(CommonOutputs.IEvaluatorOutput))
-                return true;
-            if (variableType == typeof(IMlState))
                 return true;
 
             var kind = TlcModule.GetDataType(variableType);
@@ -259,7 +260,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// This is populated by individual nodes when they parse their respective JSON definitions, and then the values are updated
     /// during the node execution.
     /// </summary>
-    public sealed class RunContext
+    [BestFriend]
+    internal sealed class RunContext
     {
         private readonly Dictionary<string, EntryPointVariable> _vars;
         private readonly IExceptionContext _ectx;
@@ -406,14 +408,14 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// <summary>
     /// A representation of one graph node.
     /// </summary>
-    public sealed class EntryPointNode
+    [BestFriend]
+    internal sealed class EntryPointNode
     {
         // The unique node ID, generated at compilation.
         public readonly string Id;
 
         private readonly IHost _host;
-        private readonly ModuleCatalog _catalog;
-        private readonly ModuleCatalog.EntryPointInfo _entryPoint;
+        private readonly ComponentCatalog.EntryPointInfo _entryPoint;
         private readonly InputBuilder _inputBuilder;
         private readonly OutputHelper _outputHelper;
 
@@ -473,30 +475,29 @@ namespace Microsoft.ML.Runtime.EntryPoints
             }
         }
 
-        private EntryPointNode(IHostEnvironment env, IChannel ch, ModuleCatalog moduleCatalog, RunContext context,
-            string id, string entryPointName, JObject inputs, JObject outputs, bool checkpoint = false,
-            string stageId = "", float cost = float.NaN, string label = null, string group = null, string weight = null, string name = null)
+        private EntryPointNode(IHostEnvironment env, IChannel ch, RunContext context,
+          string id, string entryPointName, JObject inputs, JObject outputs, bool checkpoint = false,
+          string stageId = "", float cost = float.NaN, string label = null, string group = null, string weight = null,
+          string name = null)
         {
             Contracts.AssertValue(env);
             env.AssertNonEmpty(id);
             _host = env.Register(id);
             _host.AssertValue(context);
             _host.AssertNonEmpty(entryPointName);
-            _host.AssertValue(moduleCatalog);
             _host.AssertValueOrNull(inputs);
             _host.AssertValueOrNull(outputs);
 
             _context = context;
-            _catalog = moduleCatalog;
 
             Id = id;
-            if (!moduleCatalog.TryFindEntryPoint(entryPointName, out _entryPoint))
+            if (!env.ComponentCatalog.TryFindEntryPoint(entryPointName, out _entryPoint))
                 throw _host.Except($"Entry point '{entryPointName}' not found");
 
             // Validate inputs.
             _inputMap = new Dictionary<ParameterBinding, VariableBinding>();
             _inputBindingMap = new Dictionary<string, List<ParameterBinding>>();
-            _inputBuilder = new InputBuilder(_host, _entryPoint.InputType, moduleCatalog);
+            _inputBuilder = new InputBuilder(_host, _entryPoint.InputType, env.ComponentCatalog);
 
             // REVIEW: This logic should move out of Node eventually and be delegated to
             // a class that can nest to handle Components with variables.
@@ -510,9 +511,9 @@ namespace Microsoft.ML.Runtime.EntryPoints
                 throw _host.Except($"The following required inputs were not provided: {String.Join(", ", missing)}");
 
             var inputInstance = _inputBuilder.GetInstance();
-            SetColumnArgument(ch, inputInstance, "LabelColumn", label, "label", typeof(CommonInputs.ITrainerInputWithLabel));
-            SetColumnArgument(ch, inputInstance, "GroupIdColumn", group, "group Id", typeof(CommonInputs.ITrainerInputWithGroupId));
-            SetColumnArgument(ch, inputInstance, "WeightColumn", weight, "weight", typeof(CommonInputs.ITrainerInputWithWeight), typeof(CommonInputs.IUnsupervisedTrainerWithWeight));
+            SetColumnArgument(ch, inputInstance, "LabelColumnName", label, "label", typeof(CommonInputs.ITrainerInputWithLabel));
+            SetColumnArgument(ch, inputInstance, "RowGroupColumnName", group, "group Id", typeof(CommonInputs.ITrainerInputWithGroupId));
+            SetColumnArgument(ch, inputInstance, "ExampleWeightColumnName", weight, "weight", typeof(CommonInputs.ITrainerInputWithWeight), typeof(CommonInputs.IUnsupervisedTrainerWithWeight));
             SetColumnArgument(ch, inputInstance, "NameColumn", name, "name");
 
             // Validate outputs.
@@ -561,42 +562,36 @@ namespace Microsoft.ML.Runtime.EntryPoints
             }
         }
 
-        public static EntryPointNode Create(
-            IHostEnvironment env,
-            string entryPointName,
-            object arguments,
-            ModuleCatalog catalog,
-            RunContext context,
-            Dictionary<string, List<ParameterBinding>> inputBindingMap,
-            Dictionary<ParameterBinding, VariableBinding> inputMap,
-            Dictionary<string, string> outputMap,
-            bool checkpoint = false,
-            string stageId = "",
-            float cost = float.NaN)
+        public static EntryPointNode Create(IHostEnvironment env,
+          string entryPointName,
+          object arguments,
+          RunContext context,
+          Dictionary<string, List<ParameterBinding>> inputBindingMap,
+          Dictionary<ParameterBinding, VariableBinding> inputMap,
+          Dictionary<string, string> outputMap,
+          bool checkpoint = false,
+          string stageId = "",
+          float cost = float.NaN)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckNonEmpty(entryPointName, nameof(entryPointName));
             env.CheckValue(arguments, nameof(arguments));
-            env.CheckValue(catalog, nameof(catalog));
             env.CheckValue(context, nameof(context));
             env.CheckValue(inputBindingMap, nameof(inputBindingMap));
             env.CheckValue(inputMap, nameof(inputMap));
             env.CheckValue(outputMap, nameof(outputMap));
-            ModuleCatalog.EntryPointInfo info;
-            bool success = catalog.TryFindEntryPoint(entryPointName, out info);
+            ComponentCatalog.EntryPointInfo info;
+            bool success = env.ComponentCatalog.TryFindEntryPoint(entryPointName, out info);
             env.Assert(success);
 
-            var inputBuilder = new InputBuilder(env, info.InputType, catalog);
+            var inputBuilder = new InputBuilder(env, info.InputType, env.ComponentCatalog);
             var outputHelper = new OutputHelper(env, info.OutputType);
 
             using (var ch = env.Start("Create EntryPointNode"))
             {
-                var entryPointNode = new EntryPointNode(env, ch, catalog, context, context.GenerateId(entryPointName), entryPointName,
+                return new EntryPointNode(env, ch, context, context.GenerateId(entryPointName), entryPointName,
                     inputBuilder.GetJsonObject(arguments, inputBindingMap, inputMap),
                     outputHelper.GetJsonObject(outputMap), checkpoint, stageId, cost);
-
-                ch.Done();
-                return entryPointNode;
             }
         }
 
@@ -604,7 +599,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             IHostEnvironment env,
             string entryPointName,
             object arguments,
-            ModuleCatalog catalog,
+            ComponentCatalog catalog,
             RunContext context,
             Dictionary<string, string> inputMap,
             Dictionary<string, string> outputMap,
@@ -612,7 +607,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             string stageId = "",
             float cost = float.NaN)
         {
-            ModuleCatalog.EntryPointInfo info;
+            ComponentCatalog.EntryPointInfo info;
             bool success = catalog.TryFindEntryPoint(entryPointName, out info);
             env.Assert(success);
 
@@ -625,14 +620,14 @@ namespace Microsoft.ML.Runtime.EntryPoints
                 inputParamBindingMap.Add(paramBinding, new SimpleVariableBinding(kvp.Value));
             }
 
-            return Create(env, entryPointName, arguments, catalog, context, inputBindingMap, inputParamBindingMap,
+            return Create(env, entryPointName, arguments, context, inputBindingMap, inputParamBindingMap,
                 outputMap, checkpoint, stageId, cost);
         }
 
         /// <summary>
         /// Checks the given JSON object key-value pair is a valid EntryPoint input and
         /// extracts out any variables that need to be populated. These variables will be
-        /// added to the EntryPoint context. Input parameters that are not set to variables 
+        /// added to the EntryPoint context. Input parameters that are not set to variables
         /// will be immediately set using the input builder instance.
         /// </summary>
         private void CheckAndSetInputValue(KeyValuePair<string, JToken> pair)
@@ -692,7 +687,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
 
         /// <summary>
         /// Checks the given JSON object key-value pair is a valid EntryPoint output.
-        /// Extracts out any variables that need to be populated and adds them to the 
+        /// Extracts out any variables that need to be populated and adds them to the
         /// EntryPoint context.
         /// </summary>
         private void CheckAndMarkOutputValue(KeyValuePair<string, JToken> pair)
@@ -855,7 +850,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         private IEnumerable<EntryPointNode> _macroNodes;
 
         public IEnumerable<EntryPointNode> MacroNodes => _macroNodes;
-        public ModuleCatalog Catalog => _catalog;
+        public ComponentCatalog Catalog => _host.ComponentCatalog;
         public RunContext Context => _context;
         public Dictionary<string, List<ParameterBinding>> InputBindingMap => _inputBindingMap;
         public Dictionary<ParameterBinding, VariableBinding> InputMap => _inputMap;
@@ -895,12 +890,11 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
 
         public static List<EntryPointNode> ValidateNodes(IHostEnvironment env, RunContext context, JArray nodes,
-            ModuleCatalog moduleCatalog, string label = null, string group = null, string weight = null, string name = null)
+          string label = null, string group = null, string weight = null, string name = null)
         {
             Contracts.AssertValue(env);
             env.AssertValue(context);
             env.AssertValue(nodes);
-            env.AssertValue(moduleCatalog);
 
             var result = new List<EntryPointNode>(nodes.Count);
             using (var ch = env.Start("Validating graph nodes"))
@@ -935,10 +929,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
                         ch.Warning("Node '{0}' has unexpected fields that are ignored: {1}", id, string.Join(", ", unexpectedFields.Select(x => x.Name)));
                     }
 
-                    result.Add(new EntryPointNode(env, ch, moduleCatalog, context, id, nodeName, inputs, outputs, checkpoint, stageId, cost, label, group, weight, name));
+                    result.Add(new EntryPointNode(env, ch, context, id, nodeName, inputs, outputs, checkpoint, stageId, cost, label, group, weight, name));
                 }
-
-                ch.Done();
             }
             return result;
         }
@@ -996,7 +988,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
     }
 
-    public sealed class EntryPointGraph
+    [BestFriend]
+    internal sealed class EntryPointGraph
     {
         private const string RegistrationName = "EntryPointGraph";
         private readonly IHost _host;
@@ -1004,15 +997,14 @@ namespace Microsoft.ML.Runtime.EntryPoints
         private readonly RunContext _context;
         private readonly List<EntryPointNode> _nodes;
 
-        public EntryPointGraph(IHostEnvironment env, ModuleCatalog moduleCatalog, JArray nodes)
+        public EntryPointGraph(IHostEnvironment env, JArray nodes)
         {
             Contracts.CheckValue(env, nameof(env));
             _host = env.Register(RegistrationName);
-            _host.CheckValue(moduleCatalog, nameof(moduleCatalog));
             _host.CheckValue(nodes, nameof(nodes));
 
             _context = new RunContext(_host);
-            _nodes = EntryPointNode.ValidateNodes(_host, _context, nodes, moduleCatalog);
+            _nodes = EntryPointNode.ValidateNodes(_host, _context, nodes);
         }
 
         public bool HasRunnableNodes => _nodes.FirstOrDefault(x => x.CanStart()) != null;
@@ -1063,7 +1055,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// or a array-indexed or dictionary-keyed value from the variable, assuming it is
     /// of an Array or Dictionary type.
     /// </summary>
-    public abstract class VariableBinding
+    [BestFriend]
+    internal abstract class VariableBinding
     {
         public string VariableName { get; private set; }
 
@@ -1073,8 +1066,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
             VariableName = varName;
         }
 
-        // A regex to validate an EntryPoint variable value accessor string. Valid EntryPoint variable names 
-        // can be any sequence of alphanumeric characters and underscores. They must start with a letter or underscore. 
+        // A regex to validate an EntryPoint variable value accessor string. Valid EntryPoint variable names
+        // can be any sequence of alphanumeric characters and underscores. They must start with a letter or underscore.
         // An EntryPoint variable can be followed with an array or dictionary specifier, which begins
         // with '[', contains either an integer or alphanumeric string, optionally wrapped in single-quotes,
         // followed with ']'.
@@ -1138,7 +1131,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
         public override string ToString() => VariableName;
     }
 
-    public sealed class SimpleVariableBinding
+    [BestFriend]
+    internal sealed class SimpleVariableBinding
         : VariableBinding
     {
         public SimpleVariableBinding(string name)
@@ -1157,7 +1151,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
     }
 
-    public sealed class DictionaryKeyVariableBinding
+    internal sealed class DictionaryKeyVariableBinding
         : VariableBinding
     {
         public readonly string Key;
@@ -1182,7 +1176,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
     }
 
-    public sealed class ArrayIndexVariableBinding
+    [BestFriend]
+    internal sealed class ArrayIndexVariableBinding
         : VariableBinding
     {
         public readonly int Index;
@@ -1211,9 +1206,10 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// Represents the l-value assignable destination of a <see cref="VariableBinding"/>.
     /// Subclasses exist to express the needed bindinds for subslots
     /// of a yet-to-be-constructed array or dictionary EntryPoint input parameter
-    /// (e.g. "myVar": ["$var1", "$var2"] would yield two <see cref="ArrayIndexParameterBinding"/>: (myVar, 0), (myVar, 1))
+    /// (for example, "myVar": ["$var1", "$var2"] would yield two <see cref="ArrayIndexParameterBinding"/>: (myVar, 0), (myVar, 1))
     /// </summary>
-    public abstract class ParameterBinding
+    [BestFriend]
+    internal abstract class ParameterBinding
     {
         public readonly string ParameterName;
 
@@ -1226,7 +1222,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
         public override string ToString() => ParameterName;
     }
 
-    public sealed class SimpleParameterBinding
+    [BestFriend]
+    internal sealed class SimpleParameterBinding
         : ParameterBinding
     {
         public SimpleParameterBinding(string name)
@@ -1247,7 +1244,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
     }
 
-    public sealed class DictionaryKeyParameterBinding
+    internal sealed class DictionaryKeyParameterBinding
         : ParameterBinding
     {
         public readonly string Key;
@@ -1275,7 +1272,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
     }
 
-    public sealed class ArrayIndexParameterBinding
+    [BestFriend]
+    internal sealed class ArrayIndexParameterBinding
         : ParameterBinding
     {
         public readonly int Index;

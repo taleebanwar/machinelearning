@@ -5,12 +5,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Data;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public abstract class BaseSubModelSelector<TOutput> : ISubModelSelector<TOutput>
+    internal abstract class BaseSubModelSelector<TOutput> : ISubModelSelector<TOutput>
     {
         protected readonly IHost Host;
 
@@ -25,7 +26,7 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
             Host = env.Register(name);
         }
 
-        protected void Print(IChannel ch, IList<FeatureSubsetModel<IPredictorProducing<TOutput>>> models, string metricName)
+        protected void Print(IChannel ch, IList<FeatureSubsetModel<TOutput>> models, string metricName)
         {
             // REVIEW: The output format was faithfully reproduced from the original format, but it's unclear
             // to me that this is right. Why have two bars in the header line, but only one bar in the results?
@@ -49,27 +50,27 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
             }
         }
 
-        public virtual IList<FeatureSubsetModel<IPredictorProducing<TOutput>>> Prune(IList<FeatureSubsetModel<IPredictorProducing<TOutput>>> models)
+        public virtual IList<FeatureSubsetModel<TOutput>> Prune(IList<FeatureSubsetModel<TOutput>> models)
         {
             return models;
         }
 
-        private SubComponent<IEvaluator, SignatureEvaluator> GetEvaluatorSubComponent()
+        private IEvaluator GetEvaluator(IHostEnvironment env)
         {
             switch (PredictionKind)
             {
                 case PredictionKind.BinaryClassification:
-                    return new SubComponent<IEvaluator, SignatureEvaluator>(BinaryClassifierEvaluator.LoadName);
+                    return new BinaryClassifierEvaluator(env, new BinaryClassifierEvaluator.Arguments());
                 case PredictionKind.Regression:
-                    return new SubComponent<IEvaluator, SignatureEvaluator>(RegressionEvaluator.LoadName);
-                case PredictionKind.MultiClassClassification:
-                    return new SubComponent<IEvaluator, SignatureEvaluator>(MultiClassClassifierEvaluator.LoadName);
+                    return new RegressionEvaluator(env, new RegressionEvaluator.Arguments());
+                case PredictionKind.MulticlassClassification:
+                    return new MulticlassClassificationEvaluator(env, new MulticlassClassificationEvaluator.Arguments());
                 default:
                     throw Host.Except("Unrecognized prediction kind '{0}'", PredictionKind);
             }
         }
 
-        public virtual void CalculateMetrics(FeatureSubsetModel<IPredictorProducing<TOutput>> model,
+        public virtual void CalculateMetrics(FeatureSubsetModel<TOutput> model,
             ISubsetSelector subsetSelector, Subset subset, Batch batch, bool needMetrics)
         {
             if (!needMetrics || model == null || model.Metrics != null)
@@ -81,12 +82,11 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
                 // Because the training and test datasets are drawn from the same base dataset, the test data role mappings
                 // are the same as for the train data.
                 IDataScorerTransform scorePipe = ScoreUtils.GetScorer(model.Predictor, testData, Host, testData.Schema);
-                // REVIEW: Should we somehow allow the user to customize the evaluator?
-                // By what mechanism should we allow that?
-                var evalComp = GetEvaluatorSubComponent();
                 RoleMappedData scoredTestData = new RoleMappedData(scorePipe,
                     GetColumnRoles(testData.Schema, scorePipe.Schema));
-                IEvaluator evaluator = evalComp.CreateInstance(Host);
+                // REVIEW: Should we somehow allow the user to customize the evaluator?
+                // By what mechanism should we allow that?
+                IEvaluator evaluator = GetEvaluator(Host);
                 // REVIEW: with the new evaluators, metrics of individual models are no longer
                 // printed to the Console. Consider adding an option on the combiner to print them.
                 // REVIEW: Consider adding an option to the combiner to save a data view
@@ -97,37 +97,36 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
                 // REVIEW: We're assuming that the metrics of interest are always doubles here.
                 var metrics = EvaluateUtils.GetMetrics(metricsView, getVectorMetrics: false);
                 model.Metrics = metrics.ToArray();
-                ch.Done();
             }
         }
 
         private IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetColumnRoles(
-            RoleMappedSchema testSchema, ISchema scoredSchema)
+            RoleMappedSchema testSchema, DataViewSchema scoredSchema)
         {
             switch (PredictionKind)
             {
                 case PredictionKind.BinaryClassification:
-                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Name);
-                    var scoreInfo = EvaluateUtils.GetScoreColumnInfo(Host, scoredSchema, null, nameof(BinaryClassifierMamlEvaluator.ArgumentsBase.ScoreColumn),
-                        MetadataUtils.Const.ScoreColumnKind.BinaryClassification);
-                    yield return RoleMappedSchema.CreatePair(MetadataUtils.Const.ScoreValueKind.Score, scoreInfo.Name);
+                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Value.Name);
+                    var scoreCol = EvaluateUtils.GetScoreColumn(Host, scoredSchema, null, nameof(BinaryClassifierMamlEvaluator.ArgumentsBase.ScoreColumn),
+                        AnnotationUtils.Const.ScoreColumnKind.BinaryClassification);
+                    yield return RoleMappedSchema.CreatePair(AnnotationUtils.Const.ScoreValueKind.Score, scoreCol.Name);
                     // Get the optional probability column.
-                    var probInfo = EvaluateUtils.GetOptAuxScoreColumnInfo(Host, scoredSchema, null, nameof(BinaryClassifierMamlEvaluator.Arguments.ProbabilityColumn),
-                        scoreInfo.Index, MetadataUtils.Const.ScoreValueKind.Probability, t => t == NumberType.Float);
-                    if (probInfo != null)
-                        yield return RoleMappedSchema.CreatePair(MetadataUtils.Const.ScoreValueKind.Probability, probInfo.Name);
+                    var probCol = EvaluateUtils.GetOptAuxScoreColumn(Host, scoredSchema, null, nameof(BinaryClassifierMamlEvaluator.Arguments.ProbabilityColumn),
+                        scoreCol.Index, AnnotationUtils.Const.ScoreValueKind.Probability, NumberDataViewType.Single.Equals);
+                    if (probCol.HasValue)
+                        yield return RoleMappedSchema.CreatePair(AnnotationUtils.Const.ScoreValueKind.Probability, probCol.Value.Name);
                     yield break;
                 case PredictionKind.Regression:
-                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Name);
-                    scoreInfo = EvaluateUtils.GetScoreColumnInfo(Host, scoredSchema, null, nameof(RegressionMamlEvaluator.Arguments.ScoreColumn),
-                        MetadataUtils.Const.ScoreColumnKind.Regression);
-                    yield return RoleMappedSchema.CreatePair(MetadataUtils.Const.ScoreValueKind.Score, scoreInfo.Name);
+                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Value.Name);
+                    scoreCol = EvaluateUtils.GetScoreColumn(Host, scoredSchema, null, nameof(RegressionMamlEvaluator.Arguments.ScoreColumn),
+                        AnnotationUtils.Const.ScoreColumnKind.Regression);
+                    yield return RoleMappedSchema.CreatePair(AnnotationUtils.Const.ScoreValueKind.Score, scoreCol.Name);
                     yield break;
-                case PredictionKind.MultiClassClassification:
-                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Name);
-                    scoreInfo = EvaluateUtils.GetScoreColumnInfo(Host, scoredSchema, null, nameof(MultiClassMamlEvaluator.Arguments.ScoreColumn),
-                        MetadataUtils.Const.ScoreColumnKind.MultiClassClassification);
-                    yield return RoleMappedSchema.CreatePair(MetadataUtils.Const.ScoreValueKind.Score, scoreInfo.Name);
+                case PredictionKind.MulticlassClassification:
+                    yield return RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, testSchema.Label.Value.Name);
+                    scoreCol = EvaluateUtils.GetScoreColumn(Host, scoredSchema, null, nameof(MulticlassClassificationMamlEvaluator.Arguments.ScoreColumn),
+                        AnnotationUtils.Const.ScoreColumnKind.MulticlassClassification);
+                    yield return RoleMappedSchema.CreatePair(AnnotationUtils.Const.ScoreValueKind.Score, scoreCol.Name);
                     yield break;
                 default:
                     throw Host.Except("Unrecognized prediction kind '{0}'", PredictionKind);

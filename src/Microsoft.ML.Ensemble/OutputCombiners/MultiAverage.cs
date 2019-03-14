@@ -3,20 +3,20 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Trainers.Ensemble;
 
-[assembly: LoadableClass(typeof(MultiAverage), typeof(MultiAverage.Arguments), typeof(SignatureCombiner),
+[assembly: LoadableClass(typeof(MultiAverage), typeof(MultiAverage.Options), typeof(SignatureCombiner),
     Average.UserName, MultiAverage.LoadName)]
 [assembly: LoadableClass(typeof(MultiAverage), null, typeof(SignatureLoadModel), Average.UserName,
     MultiAverage.LoadName, MultiAverage.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public sealed class MultiAverage : BaseMultiAverager, ICanSaveModel
+    internal sealed class MultiAverage : BaseMultiAverager
     {
         public const string LoadName = "MultiAverage";
         public const string LoaderSignature = "MultiAverageCombiner";
@@ -28,17 +28,18 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 verWrittenCur: 0x00010001,
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(MultiAverage).Assembly.FullName);
         }
 
         [TlcModule.Component(Name = LoadName, FriendlyName = Average.UserName)]
-        public sealed class Arguments : ArgumentsBase, ISupportMulticlassOutputCombinerFactory
+        public sealed class Options : OptionsBase, ISupportMulticlassOutputCombinerFactory
         {
-            public IMultiClassOutputCombiner CreateComponent(IHostEnvironment env) => new MultiAverage(env, this);
+            public IMulticlassOutputCombiner CreateComponent(IHostEnvironment env) => new MultiAverage(env, this);
         }
 
-        public MultiAverage(IHostEnvironment env, Arguments args)
-            : base(env, LoaderSignature, args)
+        public MultiAverage(IHostEnvironment env, Options options)
+            : base(env, LoaderSignature, options)
         {
         }
 
